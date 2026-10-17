@@ -53,6 +53,8 @@ const eur = new Intl.NumberFormat('fr-FR', { style: 'currency', currency: 'EUR',
 const money = v => (v === null || v === undefined || v === '') ? '—' : eur.format(v);
 const signedMoney = v => (v > 0 ? '+' : v < 0 ? '−' : '') + eur.format(Math.abs(v));
 
+const APP_VERSION = '2026.10.17';
+
 const MOVEMENTS = { auto: 'Automatique', manuel: 'Remontage manuel', quartz: 'Quartz', spring: 'Spring Drive' };
 
 /* ---------------- Icônes ---------------- */
@@ -1077,6 +1079,11 @@ async function renderSettings() {
     <div class="section-title"><div><h2>Installer sur l'iPhone</h2></div></div>
     <p class="prose">Dans Safari : bouton Partager, puis « Sur l'écran d'accueil ». Écrin s'ouvre alors en plein écran, comme une app, et fonctionne hors ligne.</p>
 
+    <div class="section-title"><div><h2>Application</h2><p>Version ${APP_VERSION}</p></div></div>
+    <div class="list">
+      <button id="update">Rechercher une mise à jour <small>recharge l'app</small></button>
+    </div>
+
     <div class="section-title"><div><h2>Données</h2></div></div>
     <div class="list">
       <button id="demo">Ajouter des montres d'exemple</button>
@@ -1089,6 +1096,7 @@ async function renderSettings() {
     applyTheme(b.dataset.themeOpt);
     $$('[data-theme-opt]', app).forEach(x => x.setAttribute('aria-pressed', x === b));
   });
+  $('#update').onclick = checkForUpdate;
   $('#export').onclick = exportData;
   $('#import').onchange = e => e.target.files[0] && importData(e.target.files[0]);
   $('#demo').onclick = async () => { await loadDemo(); toast('Exemples ajoutés'); go('#/'); };
@@ -1208,7 +1216,35 @@ document.addEventListener('keydown', e => { if (e.key === 'Escape') closeLayer()
   applyTheme(getTheme());
   await reload();
   route();
-  if ('serviceWorker' in navigator && location.protocol === 'https:') {
-    navigator.serviceWorker.register('sw.js').catch(() => {});
-  }
+  setupUpdates();
 })();
+
+/* ---------------- Mises à jour de l'app ---------------- */
+
+let swReg = null;
+async function setupUpdates() {
+  if (!('serviceWorker' in navigator) || !(location.protocol === 'https:' || location.hostname === 'localhost')) return;
+  const hadController = !!navigator.serviceWorker.controller;
+  swReg = await navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).catch(() => null);
+  let reloading = false;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (!hadController || reloading) return;
+    // Pas de rechargement au milieu d'une saisie : la nouvelle version attendra la prochaine ouverture.
+    if (location.hash === '#/new' || location.hash.startsWith('#/edit') || layer.innerHTML) {
+      toast('Mise à jour prête, appliquée à la prochaine ouverture');
+      return;
+    }
+    reloading = true;
+    location.reload();
+  });
+  // L'app installée est souvent reprise depuis l'arrière-plan sans être rechargée : on vérifie à chaque retour.
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') swReg?.update().catch(() => {});
+  });
+}
+
+async function checkForUpdate() {
+  toast('Recherche de mise à jour…');
+  try { await swReg?.update(); } catch { /* hors ligne */ }
+  setTimeout(() => location.reload(), 900);
+}

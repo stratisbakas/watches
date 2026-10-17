@@ -1,5 +1,5 @@
 // Cache de l'app pour qu'elle s'ouvre hors ligne. Incrémenter VERSION à chaque mise à jour.
-const VERSION = 'ecrin-v10';
+const VERSION = 'ecrin-v13';
 const FONT_HOSTS = ['fonts.googleapis.com', 'fonts.gstatic.com'];
 const SHELL = [
   './', 'index.html', 'styles.css', 'app.js', 'db.js', 'catalog.js',
@@ -32,8 +32,10 @@ self.addEventListener('fetch', e => {
     return;
   }
   if (url.origin !== location.origin) return;
+  // `no-cache` : on revalide toujours auprès du serveur, sans attendre la fin du cache HTTP de GitHub (10 min).
+  const fresh = e.request.mode === 'navigate' ? fetch(e.request.url, { cache: 'no-cache' }) : fetch(e.request, { cache: 'no-cache' });
   e.respondWith(
-    fetch(e.request)
+    fresh
       .then(res => {
         const copy = res.clone();
         caches.open(VERSION).then(c => c.put(e.request, copy));
