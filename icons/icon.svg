@@ -1,16 +1,13 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
-  <defs>
-    <radialGradient id="g" cx="30%" cy="22%" r="85%">
-      <stop offset="0" stop-color="#e8743b"/>
-      <stop offset="0.45" stop-color="#7a3a1f"/>
-      <stop offset="1" stop-color="#0a0a0b"/>
-    </radialGradient>
-  </defs>
-  <rect width="512" height="512" fill="url(#g)"/>
-  <g fill="none" stroke="#f4f1ea" stroke-width="14" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M186 150l14-78h112l14 78M186 362l14 78h112l14-78"/>
-    <circle cx="256" cy="256" r="118"/>
-    <path d="M256 186v70l46 30"/>
-    <path d="M382 242v28"/>
-  </g>
-</svg>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024"><defs><filter id="blurK" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="70"/></filter>
+<filter id="shK" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="26"/></filter>
+<pattern id="gridK" width="46" height="46" patternUnits="userSpaceOnUse"><path d="M46 0 V46 M0 46 H46" stroke="#ffffff" stroke-opacity=".28" stroke-width="2" fill="none"/></pattern><clipPath id="cK"><rect x="292" y="292" width="420" height="440" rx="128"/></clipPath></defs>
+<rect width="1024" height="1024" fill="#1c1b19"/><g transform="translate(512 500) scale(1.28) translate(-526 -512)">
+<rect x="292" y="292" width="420" height="440" rx="128" fill="#000" opacity=".6" filter="url(#shK)" transform="translate(0,28)"/>
+<rect x="704" y="466" width="56" height="92" rx="22" fill="#e9e4da"/>
+<rect x="704" y="466" width="56" height="92" rx="22" fill="none" stroke="#000" stroke-opacity=".15" stroke-width="3"/>
+<g clip-path="url(#cK)"><g filter="url(#blurK)">
+<rect x="292" y="292" width="420" height="440" fill="#c3a6ff"/>
+<circle cx="691.0" cy="358.0" r="231.00000000000003" fill="#ffd877"/>
+<circle cx="355.0" cy="732.0" r="189.0" fill="#78e3a2"/>
+<circle cx="586.0" cy="556.0" r="126.0" fill="#ffb7c2" opacity=".55"/>
+</g><rect x="292" y="292" width="420" height="440" fill="url(#gridK)"/></g></g></svg>
