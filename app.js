@@ -278,7 +278,12 @@ function placeholder(w) {
   const h = hash(`${w.brand}${w.model}`) % 360;
   return `<div class="placeholder" style="background:radial-gradient(120% 90% at 30% 15%, hsl(${h} 30% 34%), hsl(${(h + 30) % 360} 22% 11%))">${I.watch}</div>`;
 }
-const media = w => w.photo ? `<img class="media" data-photo="${esc(w.id)}" alt="">` : placeholder(w);
+// Photos d'une montre : `w.photos` (la première sert de couverture). Les fiches d'avant n'avaient qu'une photo, rangée sous l'id de la montre.
+const photoIds = w => w.photos?.length ? w.photos : (w.photo ? [w.id] : []);
+const coverId = w => photoIds(w)[0];
+const media = w => coverId(w) ? `<img class="media" data-photo="${esc(coverId(w))}" alt="">` : placeholder(w);
+const thumb = w => coverId(w) ? `<img data-photo="${esc(coverId(w))}" alt="">` : placeholder(w);
+const photoURLs = async w => (await Promise.all(photoIds(w).map(photoURL))).filter(Boolean);
 
 function loadImage(file) {
   return new Promise((resolve, reject) => {
@@ -327,15 +332,27 @@ function toast(msg) {
   t._h = setTimeout(() => t.classList.remove('show'), 2200);
 }
 
-function openViewer(url) {
-  openLayer(`<div class="viewer"><img src="${url}" alt="" draggable="false">
+function openViewer(urls, start = 0) {
+  if (!Array.isArray(urls)) urls = [urls];
+  let index = Math.min(start, urls.length - 1);
+  const many = urls.length > 1;
+  openLayer(`<div class="viewer"><img src="${urls[index]}" alt="" draggable="false">
     <button class="icon-btn close" aria-label="Fermer">${I.close}</button>
-    <div class="vh">Pincez ou touchez deux fois pour zoomer</div></div>`);
+    ${many ? `<div class="vcount"></div>` : ''}
+    <div class="vh">${many ? 'Glissez pour changer de photo · ' : ''}Pincez ou touchez deux fois pour zoomer</div></div>`);
   const viewer = $('.viewer', layer);
   const img = $('img', viewer);
+  const count = $('.vcount', viewer);
   $('.close', viewer).onclick = () => closeLayer();
 
-  let scale = 1, tx = 0, ty = 0, lastTap = 0;
+  let scale = 1, tx = 0, ty = 0, lastTap = 0, axis = null;
+  const showAt = i => {
+    index = (i + urls.length) % urls.length;
+    img.src = urls[index];
+    if (count) count.textContent = `${index + 1} / ${urls.length}`;
+    scale = 1; tx = 0; ty = 0;
+  };
+  showAt(index);
   const pts = new Map();
   let last = null;
   const apply = (anim = false) => {
@@ -375,7 +392,14 @@ function openViewer(url) {
       tx += now.x - last.x; ty += now.y - last.y;
     } else if (pts.size === 1) {
       if (scale > 1) { tx += now.x - last.x; ty += now.y - last.y; }
-      else { ty = Math.max(0, ty + now.y - last.y); }
+      else {
+        // Sans zoom : glisser à l'horizontale change de photo, vers le bas ferme.
+        if (!axis && Math.hypot(tx + now.x - last.x, ty + now.y - last.y) > 8) {
+          axis = many && Math.abs(now.x - last.x) > Math.abs(now.y - last.y) ? 'x' : 'y';
+        }
+        if (axis === 'x') tx += now.x - last.x;
+        else ty = Math.max(0, ty + now.y - last.y);
+      }
     }
     last = now;
     apply();
@@ -385,7 +409,11 @@ function openViewer(url) {
     pts.delete(e.pointerId);
     last = snapshot();
     if (pts.size) return;
+    const swiped = axis === 'x' && scale <= 1 ? tx : 0;
+    axis = null;
     if (scale <= 1 && ty > 110) return closeLayer();
+    if (Math.abs(swiped) > 70) { showAt(index + (swiped < 0 ? 1 : -1)); return apply(true); }
+    if (swiped) { tx = 0; return apply(true); }
     const t = Date.now();
     if (t - lastTap < 280) {
       if (scale > 1.05) { scale = 1; tx = 0; ty = 0; } else zoomAt(e.clientX, e.clientY, 2.6);
@@ -531,7 +559,7 @@ function renderDetail(id) {
     <div class="carousel">${list.map(w => `
       <div class="slide" data-id="${esc(w.id)}">
         ${media(w)}
-        ${w.photo ? `<button class="zoom-hit" aria-label="Agrandir la photo"></button><span class="zoom-hint">${I.zoom} Agrandir</span>` : ''}
+        ${coverId(w) ? `<button class="zoom-hit" aria-label="Agrandir les photos"></button><span class="zoom-hint">${I.zoom} ${photoIds(w).length > 1 ? `${photoIds(w).length} photos` : 'Agrandir'}</span>` : ''}
         <button class="icon-btn more" aria-label="Options">${I.more}</button>
         <div class="caption">
           <h1>${esc(title(w))}</h1>
@@ -554,13 +582,15 @@ function renderDetail(id) {
     $('#info').innerHTML = infoHTML(w);
     history.replaceState(null, '', `#/watch/${encodeURIComponent(w.id)}`);
     $$('[data-ev]', $('#info')).forEach(b => b.onclick = () => eventMenu(w, b.dataset.ev));
+    $$('[data-ph]', $('#info')).forEach(b => b.onclick = async () => openViewer(await photoURLs(w), Number(b.dataset.ph)));
+    hydrate($('#info'));
   };
 
   slides.forEach((s, i) => {
     const w = list[i];
     $('.more', s).onclick = () => watchMenu(w);
     const hit = $('.zoom-hit', s);
-    if (hit) hit.onclick = async () => { const url = await photoURL(w.id); if (url) openViewer(url); };
+    if (hit) hit.onclick = async () => { const urls = await photoURLs(w); if (urls.length) openViewer(urls); };
   });
   $('#d-log').onclick = () => logSheet(list[active]);
 
@@ -572,6 +602,7 @@ function renderDetail(id) {
   car.addEventListener('scroll', () => {
     clearTimeout(timer);
     timer = setTimeout(() => {
+      if (!car.isConnected) return; // on a quitté la fiche entre-temps
       const mid = car.scrollLeft + car.clientWidth / 2;
       let best = active, bd = Infinity;
       slides.forEach((s, i) => {
@@ -626,6 +657,8 @@ function infoHTML(w) {
         <div class="v">${num(w.waterResistance) ? `${num(w.waterResistance)} m` : '—'}${w.waterExposure ? ` · ${esc(EXPOSURE[w.waterExposure])}` : ''}</div>
         ${w.waterExposure === 'swim' && num(w.waterResistance) && num(w.waterResistance) < 100 ? `<div class="s" style="color:var(--soon)">Moins de 100 m : évitez la baignade</div>` : ''}</div>` : ''}
     </div>
+    ${photoIds(w).length > 1 ? `<div class="section-title"><div><h2>Photos</h2><p>${photoIds(w).length} photos · touchez pour agrandir</p></div></div>
+      <div class="gallery">${photoIds(w).map((id, i) => `<button data-ph="${i}" aria-label="Photo ${i + 1}"><img data-photo="${esc(id)}" alt=""></button>`).join('')}</div>` : ''}
     ${w.notes ? `<div class="notes">${esc(w.notes)}</div>` : ''}
     <div class="section-title"><div><h2>Historique</h2><p>Touchez un entretien pour le supprimer</p></div></div>
     <div class="history">
@@ -642,14 +675,14 @@ function watchMenu(w) {
     <div class="menu">
       <button data-a="edit">${I.pencil} Modifier la fiche</button>
       <button data-a="log">${I.wrench} Ajouter un entretien</button>
-      ${w.photo ? `<button data-a="zoom">${I.zoom} Voir la photo</button>` : ''}
+      ${coverId(w) ? `<button data-a="zoom">${I.zoom} Voir ${photoIds(w).length > 1 ? 'les photos' : 'la photo'}</button>` : ''}
       <button data-a="del" class="danger-item">${I.trash} Supprimer la montre</button>
     </div>`);
   $$('[data-a]', s).forEach(b => b.onclick = async () => {
     const a = b.dataset.a;
     if (a === 'edit') go(`#/edit/${encodeURIComponent(w.id)}`);
     if (a === 'log') logSheet(w);
-    if (a === 'zoom') { const url = await photoURL(w.id); if (url) openViewer(url); }
+    if (a === 'zoom') { const urls = await photoURLs(w); if (urls.length) openViewer(urls); }
     if (a === 'del') await removeWatch(w);
   });
 }
@@ -657,8 +690,7 @@ function watchMenu(w) {
 async function removeWatch(w) {
   if (!confirm(`Supprimer « ${title(w)} » de votre collection ? Cette action est définitive.`)) return;
   await db.deleteWatch(w.id);
-  await db.deletePhoto(w.id);
-  photoCache.delete(w.id);
+  for (const id of new Set([w.id, ...photoIds(w)])) { await db.deletePhoto(id); photoCache.delete(id); }
   await reload();
   toast('Montre supprimée');
   go(lastTab === location.hash ? '#/' : lastTab);
@@ -743,7 +775,7 @@ function renderServices() {
     ${items.map(({ w, d }) => `
       <button class="svc" data-id="${esc(w.id)}" data-k="${d.kind}">
         <div class="row">
-          <div class="thumb">${w.photo ? `<img data-photo="${esc(w.id)}" alt="">` : placeholder(w)}</div>
+          <div class="thumb">${thumb(w)}</div>
           <div class="who"><div class="t">${esc(d.label)}</div><div class="d">${esc(w.brand)} ${esc(title(w))}</div></div>
           <div class="pct">${d.unknown ? '?' : `${d.pct}%`}</div>
         </div>
@@ -798,7 +830,7 @@ function renderTimeline() {
 
   const evHTML = e => e.type === 'acq'
     ? `<a class="ev acq" href="#/watch/${encodeURIComponent(e.w.id)}">
-        <div class="thumb">${e.w.photo ? `<img data-photo="${esc(e.w.id)}" alt="">` : placeholder(e.w)}</div>
+        <div class="thumb">${thumb(e.w)}</div>
         <div style="min-width:0"><div class="t">${esc(title(e.w))}</div>
           <div class="d">Entrée · ${esc(e.w.brand)}${e.w.year && isVintage(e.w) ? ` · montre de ${e.w.year}` : ''}</div></div>
         <div class="m">${num(e.w.purchasePrice) !== null ? `<b>${money(num(e.w.purchasePrice))}</b>` : ''}${esc(fmtMonthShort(e.date))}</div>
@@ -836,7 +868,9 @@ function renderForm(id) {
   const existing = id ? watches.find(w => w.id === id) : null;
   if (id && !existing) return go('#/');
   const w = existing ? structuredClone(existing) : { id: uid(), movement: 'auto', history: [], createdAt: Date.now() };
-  let newPhoto = null;
+  // Photos en cours d'édition : { id, blob? } — blob pour les nouvelles, pas encore enregistrées.
+  const gallery = photoIds(w).map(id => ({ id }));
+  const removed = [];
   const backHref = existing ? `#/watch/${encodeURIComponent(w.id)}` : lastTab;
   const v = k => esc(w[k] ?? '');
   const lastSvc = lastOf(w, 'service') || '';
@@ -856,12 +890,7 @@ function renderForm(id) {
     <div class="results" id="results"></div>
     <p class="hint">Le catalogue contient ${CATALOG.length} références courantes. Absente ? Remplissez la fiche à la main.</p>
 
-    <label class="photo-drop" id="photo">
-      ${w.photo ? `<img data-photo="${esc(w.id)}" alt="">` : ''}
-      <span class="lbl" ${w.photo ? 'hidden' : ''}>${I.camera}Ajouter une photo</span>
-      <span class="swap" ${w.photo ? '' : 'hidden'}>Changer</span>
-      <input type="file" accept="image/*" id="file">
-    </label>
+    <div id="photos"></div>
 
     <form id="f" autocomplete="off">
       <fieldset><legend>Identité</legend><div class="group">
@@ -973,23 +1002,46 @@ function renderForm(id) {
     toast('Fiche pré-remplie');
   };
 
-  // Photo
-  $('#file').addEventListener('change', async e => {
-    const file = e.target.files[0];
-    if (!file) return;
-    try {
-      newPhoto = await compress(file);
-      const drop = $('#photo');
-      let img = $('img', drop);
-      if (!img) { img = document.createElement('img'); drop.prepend(img); }
-      img.removeAttribute('data-photo');
-      img.src = URL.createObjectURL(newPhoto);
-      $('.lbl', drop).hidden = true;
-      $('.swap', drop).hidden = false;
-    } catch {
-      toast("Impossible de lire cette image");
-    }
-  });
+  // Photos : plusieurs par montre, la première sert de couverture.
+  const box = $('#photos');
+  const renderPhotos = () => {
+    const input = `<input type="file" accept="image/*" multiple class="ph-input">`;
+    box.innerHTML = !gallery.length
+      ? `<label class="photo-drop"><span class="lbl">${I.camera}Ajouter des photos</span>${input}</label>`
+      : `<div class="photo-grid">${gallery.map((p, i) => `
+          <div class="ph">
+            <img ${p.blob ? `src="${p.url}"` : `data-photo="${esc(p.id)}"`} alt="">
+            ${i === 0 ? '<span class="ph-badge">Couverture</span>' : `<button type="button" class="ph-btn ph-cover" data-i="${i}" aria-label="Mettre en couverture">★</button>`}
+            <button type="button" class="ph-btn ph-del" data-i="${i}" aria-label="Retirer la photo">${I.close}</button>
+          </div>`).join('')}
+          <label class="ph ph-add">${I.plus}<span>Ajouter</span>${input}</label>
+        </div>
+        <p class="hint">La première photo sert de couverture. ★ pour en choisir une autre.</p>`;
+    hydrate(box);
+    $('.ph-input', box).addEventListener('change', async e => {
+      const files = [...e.target.files];
+      if (!files.length) return;
+      toast(files.length > 1 ? `Ajout de ${files.length} photos…` : 'Ajout de la photo…');
+      for (const file of files) {
+        try {
+          const blob = await compress(file);
+          gallery.push({ id: `${w.id}-${uid().slice(0, 8)}`, blob, url: URL.createObjectURL(blob) });
+        } catch { toast("Impossible de lire une des images"); }
+      }
+      renderPhotos();
+    });
+    $$('.ph-del', box).forEach(b => b.onclick = () => {
+      const [p] = gallery.splice(Number(b.dataset.i), 1);
+      if (!p.blob) removed.push(p.id);
+      renderPhotos();
+    });
+    $$('.ph-cover', box).forEach(b => b.onclick = () => {
+      const [p] = gallery.splice(Number(b.dataset.i), 1);
+      gallery.unshift(p);
+      renderPhotos();
+    });
+  };
+  renderPhotos();
 
   form.addEventListener('submit', async e => {
     e.preventDefault();
@@ -1010,13 +1062,15 @@ function renderForm(id) {
     // N'enregistre la date déclarée que si elle diffère de ce que l'historique sait déjà.
     w.declaredService = f.declaredService && f.declaredService !== lastOfHistory(w, 'service') ? f.declaredService : null;
     w.declaredWater = f.declaredWater && f.declaredWater !== lastOfHistory(w, 'water') ? f.declaredWater : null;
-    if (newPhoto) {
-      await db.putPhoto(w.id, newPhoto);
-      const old = photoCache.get(w.id);
+    for (const p of gallery) if (p.blob) await db.putPhoto(p.id, p.blob);
+    for (const id of removed) {
+      await db.deletePhoto(id);
+      const old = photoCache.get(id);
       if (old) URL.revokeObjectURL(old);
-      photoCache.delete(w.id);
-      w.photo = true;
+      photoCache.delete(id);
     }
+    w.photos = gallery.map(p => p.id);
+    w.photo = gallery.length > 0;
     await saveWatch(w);
     toast(existing ? 'Fiche mise à jour' : 'Montre ajoutée à la collection');
     go(`#/watch/${encodeURIComponent(w.id)}`);
@@ -1120,9 +1174,10 @@ const blobToDataURL = blob => new Promise(resolve => {
 async function exportData() {
   const photos = {};
   for (const w of watches) {
-    if (!w.photo) continue;
-    const blob = await db.getPhoto(w.id);
-    if (blob) photos[w.id] = await blobToDataURL(blob);
+    for (const id of photoIds(w)) {
+      const blob = await db.getPhoto(id);
+      if (blob) photos[id] = await blobToDataURL(blob);
+    }
   }
   const data = JSON.stringify({ app: 'ecrin', version: 1, exportedAt: new Date().toISOString(), watches, photos });
   const name = `ecrin-${new Date().toISOString().slice(0, 10)}.json`;
@@ -1145,10 +1200,11 @@ async function importData(file) {
     if (!confirm(`Importer ${data.watches.length} montre(s) ? Les fiches existantes portant le même identifiant seront remplacées.`)) return;
     for (const w of data.watches) {
       await db.putWatch(w);
-      const url = data.photos?.[w.id];
-      if (url) {
-        await db.putPhoto(w.id, await (await fetch(url)).blob());
-        photoCache.delete(w.id);
+      for (const id of photoIds(w)) {
+        const url = data.photos?.[id];
+        if (!url) continue;
+        await db.putPhoto(id, await (await fetch(url)).blob());
+        photoCache.delete(id);
       }
     }
     await reload();
