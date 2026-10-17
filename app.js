@@ -104,7 +104,12 @@ function suggestedInterval(w, kind) {
   const wear = WEAR[w.wear] || WEAR.regular;
   if (kind === 'water') {
     let base, why;
-    if (w.catalogWater) { base = w.catalogWater; why = 'montre de plongée'; }
+    if (w.waterExposure === 'never') {
+      // Jamais dans l'eau : l'étanchéité est vérifiée lors de la révision, pas besoin de test à part.
+      return { years: suggestedInterval(w, 'service').years, why: "jamais dans l'eau, contrôle lors de la révision" };
+    }
+    if (w.waterExposure === 'swim') { base = 1; why = 'baignade en mer ou en piscine'; }
+    else if (w.catalogWater) { base = w.catalogWater; why = 'montre de plongée'; }
     else if (isVintage(w)) { base = DEFAULTS.vintageWater; why = 'montre vintage, joints anciens'; }
     else { base = brandRule(w).water || DEFAULTS.water; why = brandSource(w, 'water'); }
     if (w.wear === 'daily' && base > 1) { base = 1; why += ', portée tous les jours'; }
@@ -123,6 +128,9 @@ const defaultServiceInterval = w => suggestedInterval(w, 'service').years;
 const defaultWaterInterval = w => suggestedInterval(w, 'water').years;
 
 // Une montre d'occasion (ou vintage) sans entretien connu : impossible de dater la prochaine révision.
+const notWaterResistant = w => num(w.waterResistance) === 0;
+const EXPOSURE = { never: 'Jamais', splash: 'Douche, éclaboussures', swim: 'Baignade (mer, piscine)' };
+
 const historyUnknown = w => w.condition === 'used' || (!w.condition && isVintage(w));
 
 // Dernière date connue pour un type d'entretien (historique + valeur déclarée dans la fiche).
@@ -138,6 +146,7 @@ function lastOf(w, kind) {
 }
 
 function due(w, kind) {
+  if (kind === 'water' && notWaterResistant(w)) return null;
   const manual = num(kind === 'service' ? w.serviceInterval : w.waterInterval);
   const interval = manual || (kind === 'service' ? defaultServiceInterval(w) : defaultWaterInterval(w));
   const label = kind === 'water' ? "Contrôle d'étanchéité" : w.movement === 'quartz' ? 'Pile & révision' : 'Révision complète';
@@ -182,22 +191,68 @@ function totals(list) {
 const sorted = () => [...watches].sort((a, b) =>
   (b.purchaseDate || '').localeCompare(a.purchaseDate || '') || (b.createdAt || 0) - (a.createdAt || 0));
 
-function searchCatalog(q) {
-  const tokens = norm(q).split(/[\s/,.-]+/).filter(Boolean);
-  if (!tokens.length) return [];
+// Abréviations courantes chez les collectionneurs → termes du catalogue.
+const ALIASES = {
+  ap: 'audemars piguet', pp: 'patek philippe', patek: 'patek philippe', jlc: 'jaeger lecoultre', vc: 'vacheron constantin',
+  gs: 'grand seiko', iwc: 'iwc', lange: 'a lange sohne', fp: 'f p journe', rm: 'richard mille', tag: 'tag heuer',
+  sub: 'submariner', subdate: 'submariner date', dj: 'datejust', dd: 'day date', gmt: 'gmt', speedy: 'speedmaster',
+  moonwatch: 'speedmaster', po: 'planet ocean', smp: 'diver 300m', bb: 'black bay', bb58: 'black bay 58', ro: 'royal oak',
+  rooo: 'royal oak offshore', exp: 'explorer', yacht: 'yacht master', oyster: 'oyster perpetual', op: 'oyster perpetual',
+  nauti: 'nautilus', '2': 'ii', '3': 'iii', ii: 'ii', santos: 'santos', tank: 'tank', reverso: 'reverso', prx: 'prx', casioak: 'ga 2100',
+};
+const levenshtein1 = (a, b) => {
+  // Vrai si a et b diffèrent d'au plus une lettre (faute de frappe).
+  if (Math.abs(a.length - b.length) > 1) return false;
+  let i = 0, j = 0, diff = 0;
+  while (i < a.length && j < b.length) {
+    if (a[i] === b[j]) { i++; j++; continue; }
+    if (++diff > 1) return false;
+    if (a.length > b.length) i++; else if (b.length > a.length) j++; else { i++; j++; }
+  }
+  return diff + (a.length - i) + (b.length - j) <= 1;
+};
+
+let index;
+function catalogIndex() {
+  if (!index) {
+    index = CATALOG.map(item => {
+      const hay = norm(`${item.brand} ${item.model} ${item.ref} ${item.nick || ''} ${item.caliber}`).replace(/[-&.'’]/g, ' ');
+      return { item, hay, hayC: compact(hay), words: hay.split(/\s+/).filter(Boolean), refC: compact(item.ref),
+        model: norm(item.model), brand: norm(item.brand), nick: norm(item.nick || '') };
+    });
+  }
+  return index;
+}
+
+function searchCatalog(q, limit = 12) {
+  const raw = norm(q).replace(/[-&.'’/,]/g, ' ').split(/\s+/).filter(Boolean);
+  if (!raw.length) return { items: [], total: 0 };
+  // Chaque mot tapé peut correspondre tel quel, ou via son abréviation (« sub » → Submariner, mais aussi Doxa SUB).
+  const scoreWords = raw.flatMap(t => [t, ...(ALIASES[t] ? ALIASES[t].split(' ') : [])]);
   const qc = compact(q);
-  return CATALOG.map(item => {
-    const hay = norm(`${item.brand} ${item.model} ${item.ref} ${item.nick || ''} ${item.caliber}`);
-    const hayC = compact(hay);
-    if (!tokens.every(t => hay.includes(t) || hayC.includes(compact(t)))) return null;
-    const refC = compact(item.ref);
+
+  const run = fuzzy => catalogIndex().map(e => {
+    const hit = t => e.hay.includes(t) || (t.length >= 3 && e.hayC.includes(compact(t)))
+      || (fuzzy && t.length >= 4 && e.words.some(w => levenshtein1(t, w.slice(0, t.length + 1)) || levenshtein1(t, w)));
+    if (!raw.every(t => hit(t) || (ALIASES[t] && ALIASES[t].split(' ').every(hit)))) return null;
     let score = 0;
-    if (qc && refC === qc) score += 100;
-    else if (qc.length >= 3 && refC.startsWith(qc)) score += 50;
-    if (tokens.some(t => norm(item.model).startsWith(t))) score += 10;
-    if (tokens.some(t => norm(item.brand).startsWith(t))) score += 5;
-    return { item, score };
-  }).filter(Boolean).sort((a, b) => b.score - a.score).slice(0, 8).map(r => r.item);
+    if (qc && e.refC === qc) score += 200;
+    else if (qc.length >= 3 && e.refC.startsWith(qc)) score += 80;
+    else if (qc.length >= 4 && e.refC.includes(qc)) score += 40;
+    for (const t of scoreWords) {
+      if (e.brand.startsWith(t)) score += 6;
+      if (e.model.startsWith(t)) score += 12;
+      else if (e.model.split(' ').some(w => w.startsWith(t))) score += 6;
+      if (e.nick && e.nick.split(' ').some(w => w.startsWith(t))) score += 15;
+    }
+    if (!e.item.to) score += 2; // les modèles actuels un peu devant à score égal
+    return { item: e.item, score };
+  }).filter(Boolean);
+
+  let found = run(false);
+  if (!found.length) found = run(true);
+  found.sort((a, b) => b.score - a.score || a.item.model.localeCompare(b.item.model));
+  return { items: found.slice(0, limit).map(r => r.item), total: found.length };
 }
 
 /* ---------------- Photos ---------------- */
@@ -411,7 +466,8 @@ function renderHome() {
     <h1 class="title-xl">${watches.length} montre${watches.length > 1 ? 's' : ''}</h1>
     <p class="lede">${Number.isFinite(first) ? `Collection commencée en ${first}` : 'Votre collection'}</p>
 
-    <div class="stats-row">
+    ${!t.value && !t.invested ? `<p class="hint" style="margin-top:14px">Ajoutez le prix d'achat et l'estimation dans chaque fiche pour suivre la valeur de la collection.</p>` : ''}
+    <div class="stats-row" ${!t.value && !t.invested ? 'hidden' : ''}>
       <div class="stat"><div class="k">Valeur estimée</div><div class="v">${money(t.value)}</div></div>
       <div class="stat"><div class="k">Investi</div><div class="v">${money(t.invested)}</div></div>
       ${t.pct !== null ? `<div class="stat"><div class="k">Plus-value</div><div class="v ${t.gain >= 0 ? 'up' : 'down'}">${t.gain >= 0 ? '+' : '−'}${Math.abs(t.pct).toFixed(0)} %</div></div>` : ''}
@@ -561,7 +617,12 @@ function infoHTML(w) {
       <div class="fact"><div class="k">Calibre</div><div class="v">${esc(w.caliber || '—')}</div>
         <div class="s">${esc(MOVEMENTS[w.movement] || '')}</div></div>
       ${dueFact(svc, svc?.label || 'Prochaine révision')}
-      ${dueFact(wat, "Prochaine étanchéité")}
+      ${notWaterResistant(w)
+        ? `<div class="fact"><div class="k">Étanchéité</div><div class="v">Non étanche</div><div class="s">À tenir éloignée de l'eau</div></div>`
+        : dueFact(wat, "Prochaine étanchéité")}
+      ${num(w.waterResistance) || w.waterExposure ? `<div class="fact wide"><div class="k">Résistance à l'eau</div>
+        <div class="v">${num(w.waterResistance) ? `${num(w.waterResistance)} m` : '—'}${w.waterExposure ? ` · ${esc(EXPOSURE[w.waterExposure])}` : ''}</div>
+        ${w.waterExposure === 'swim' && num(w.waterResistance) && num(w.waterResistance) < 100 ? `<div class="s" style="color:var(--soon)">Moins de 100 m : évitez la baignade</div>` : ''}</div>` : ''}
     </div>
     ${w.notes ? `<div class="notes">${esc(w.notes)}</div>` : ''}
     <div class="section-title"><div><h2>Historique</h2><p>Touchez un entretien pour le supprimer</p></div></div>
@@ -830,6 +891,11 @@ function renderForm(id) {
       <fieldset><legend>Entretien</legend><div class="group">
         <label class="field"><span>Dernière révision</span><input name="declaredService" type="month" value="${esc(lastSvc)}" max="${thisMonth()}"></label>
         <label class="field"><span>Dernière étanchéité</span><input name="declaredWater" type="month" value="${esc(lastWater)}" max="${thisMonth()}"></label>
+        <label class="field"><span>Étanchéité</span><input name="waterResistance" inputmode="numeric" value="${v('waterResistance')}" placeholder="mètres (0 si non étanche)"></label>
+        <label class="field"><span>Contact avec l'eau</span><select name="waterExposure">
+          <option value="" ${!w.waterExposure ? 'selected' : ''}>—</option>
+          ${Object.entries(EXPOSURE).map(([k, l]) => `<option value="${k}" ${w.waterExposure === k ? 'selected' : ''}>${l}</option>`).join('')}
+        </select></label>
         <label class="field"><span>Portée</span><select name="wear">
           ${Object.entries(WEAR).map(([k, o]) => `<option value="${k}" ${(w.wear || 'regular') === k ? 'selected' : ''}>${o.label}</option>`).join('')}
         </select></label>
@@ -851,12 +917,13 @@ function renderForm(id) {
 
   const refreshHints = () => {
     const probe = { ...w, brand: field('brand').value, movement: field('movement').value, year: num(field('year').value),
-      wear: field('wear').value, condition: field('condition').value };
+      wear: field('wear').value, condition: field('condition').value,
+      waterResistance: field('waterResistance').value, waterExposure: field('waterExposure').value };
     const sv = suggestedInterval(probe, 'service'), wt = suggestedInterval(probe, 'water');
     const fmtY = n => `${String(n).replace('.', ',')} an${n > 1 ? 's' : ''}`;
     field('serviceInterval').placeholder = fmtY(sv.years);
     field('waterInterval').placeholder = fmtY(wt.years);
-    $('#interval-hint').textContent = `Conseillé : révision ${yearsLabel(sv.years)} (${sv.why}), étanchéité ${yearsLabel(wt.years)} (${wt.why}). Laissez vide pour suivre ces conseils, ou indiquez vos propres intervalles en années.`
+    $('#interval-hint').textContent = `Conseillé : révision ${yearsLabel(sv.years)} (${sv.why}), ${notWaterResistant(probe) ? 'pas de contrôle d’étanchéité (montre non étanche)' : `étanchéité ${yearsLabel(wt.years)} (${wt.why})`}. Laissez vide pour suivre ces conseils, ou indiquez vos propres intervalles en années.`
       + (!field('declaredService').value && historyUnknown(probe) ? " Sans date de dernière révision, la montre sera marquée « à vérifier »." : '');
     $('#value-hint').innerHTML = w.catalogMarket
       ? `Cote indicative du catalogue : ~${money(w.catalogMarket)}${w.catalogRetail ? ` (neuf ${money(w.catalogRetail)})` : ''}. <button type="button" id="apply-est">Utiliser</button>`
@@ -865,19 +932,20 @@ function renderForm(id) {
     if (ab) ab.onclick = () => { field('estimatedValue').value = w.catalogMarket; };
     $('#years-hint').textContent = w.catalogYears ? `Référence produite ${w.catalogYears}.` : '';
   };
-  ['brand', 'movement', 'year', 'wear', 'condition', 'declaredService'].forEach(n => field(n).addEventListener('input', refreshHints));
+  ['brand', 'movement', 'year', 'wear', 'condition', 'declaredService', 'waterResistance', 'waterExposure'].forEach(n => field(n).addEventListener('input', refreshHints));
   refreshHints();
 
   // Recherche dans le catalogue
   const q = $('#q'), results = $('#results');
   q.addEventListener('input', () => {
-    const found = searchCatalog(q.value);
+    const { items: found, total } = searchCatalog(q.value);
     if (!q.value.trim()) { results.innerHTML = ''; return; }
     results.innerHTML = found.length
       ? found.map((it, i) => `<button type="button" data-i="${i}">
-          <div class="t">${esc(it.brand)} ${esc(it.model)}${it.nick ? ` <span style="color:var(--muted);font-weight:500">« ${esc(it.nick)} »</span>` : ''}</div>
-          <div class="d">Réf. ${esc(it.ref)} · cal. ${esc(it.caliber)} · ${it.from}${it.to ? `–${it.to}` : '–auj.'} · ~${money(it.market)}</div>
+          <div class="t">${esc(it.brand)} ${esc(it.model)}${it.nick && !norm(it.model).includes(norm(it.nick)) ? ` <span style="color:var(--muted);font-weight:500">« ${esc(it.nick)} »</span>` : ''}</div>
+          <div class="d">${[it.ref && `Réf. ${esc(it.ref)}`, `cal. ${esc(it.caliber)}`, `${it.from}${it.to ? `–${it.to}` : '–auj.'}`, it.wr ? `${it.wr} m` : '', `~${money(it.market)}`].filter(Boolean).join(' · ')}</div>
         </button>`).join('')
+        + (total > found.length ? `<div class="none">${total - found.length} autres résultats : précisez le modèle, le surnom ou la référence.</div>` : '')
       : '<div class="none">Aucune référence trouvée. Essayez la marque, le modèle ou une partie de la référence.</div>';
     $$('[data-i]', results).forEach(b => b.onclick = () => applyCatalog(found[Number(b.dataset.i)]));
   });
@@ -891,6 +959,7 @@ function renderForm(id) {
     if (it.nick && !field('nickname').value) field('nickname').value = it.nick;
     w.catalogService = it.service || null;
     w.catalogWater = it.water || null;
+    if (it.wr !== undefined && !field('waterResistance').value) field('waterResistance').value = it.wr;
     if (!field('estimatedValue').value) field('estimatedValue').value = it.market;
     w.catalogMarket = it.market;
     w.catalogRetail = it.retail;
@@ -933,6 +1002,7 @@ function renderForm(id) {
       purchasePrice: num(f.purchasePrice), estimatedValue: num(f.estimatedValue),
       serviceInterval: num(f.serviceInterval), waterInterval: num(f.waterInterval),
       condition: f.condition || null, wear: f.wear || 'regular',
+      waterResistance: num(f.waterResistance), waterExposure: f.waterExposure || null,
       notes: f.notes.trim(), updatedAt: Date.now(),
     });
     // N'enregistre la date déclarée que si elle diffère de ce que l'historique sait déjà.
