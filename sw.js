@@ -1,5 +1,5 @@
 // Cache de l'app pour qu'elle s'ouvre hors ligne. Incrémenter VERSION à chaque mise à jour.
-const VERSION = 'ecrin-v8';
+const VERSION = 'ecrin-v9';
 const FONT_HOSTS = ['fonts.googleapis.com', 'fonts.gstatic.com'];
 const SHELL = [
   './', 'index.html', 'styles.css', 'app.js', 'db.js', 'catalog.js',
