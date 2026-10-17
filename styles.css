@@ -415,6 +415,12 @@ input::placeholder, textarea::placeholder { color: var(--faint); }
 
 .form-actions { display: flex; gap: 10px; margin-top: 28px; }
 .form-actions .cta { flex: 1; justify-content: center; }
+/* Fiche en édition : le bouton Enregistrer reste visible en bas de l'écran */
+#f .form-actions {
+  position: sticky; bottom: 0; z-index: 10;
+  margin: 28px -16px 0; padding: 22px 16px calc(var(--safe-bottom) + 14px);
+  background: linear-gradient(to bottom, transparent, var(--bg) 40%);
+}
 .danger { color: var(--late); font-weight: 600; padding: 16px; display: block; margin: 18px auto 0; }
 
 /* ---------- Réglages ---------- */
